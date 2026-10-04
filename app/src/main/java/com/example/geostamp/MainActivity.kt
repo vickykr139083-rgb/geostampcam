@@ -1,29 +1,26 @@
 package com.example.geostamp
 
 import android.Manifest
-import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Matrix
-import android.graphics.Paint
-import android.graphics.Typeface
 import android.location.Geocoder
 import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
-import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
-import android.text.Layout
-import android.text.StaticLayout
-import android.text.TextPaint
+import android.os.Looper
+import android.view.OrientationEventListener
+import android.view.Surface
 import android.view.View
+import android.widget.EditText
+import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.CameraSelector
@@ -33,56 +30,100 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.exifinterface.media.ExifInterface
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.TimeZone
 import java.util.concurrent.Executors
-import kotlin.math.abs
+import kotlin.math.roundToInt
 
-class MainActivity : AppCompatActivity(), LocationListener {
-
-    private data class Place(val title: String, val address: String)
-    private data class Snap(val loc: Location, val place: Place?, val time: Long)
+class MainActivity : AppCompatActivity() {
 
     private lateinit var previewView: PreviewView
     private lateinit var info: TextView
-    private lateinit var lm: LocationManager
+    private lateinit var thumb: ImageView
+    private lateinit var fused: FusedLocationProviderClient
     private var imageCapture: ImageCapture? = null
 
     @Volatile private var loc: Location? = null
-    @Volatile private var place: Place? = null
+    @Volatile private var autoPlace: Place? = null
+    @Volatile private var manualPlace: Place? = null
+    @Volatile private var manualAt: Location? = null
+    @Volatile private var mapBmp: Bitmap? = null
+    @Volatile private var mapFor: Location? = null
     private var geocodedAt: Location? = null
-    private val io = Executors.newSingleThreadExecutor()
+    private var lastAttempt = 0L
 
-    private val permissions: Array<String> by lazy {
-        val list = mutableListOf(
-            Manifest.permission.CAMERA,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        )
-        if (Build.VERSION.SDK_INT <= 28) list += Manifest.permission.WRITE_EXTERNAL_STORAGE
-        list.toTypedArray()
-    }
+    private val io = Executors.newSingleThreadExecutor()
+    private val net = Executors.newSingleThreadExecutor()
+
+    private val permissions = arrayOf(
+        Manifest.permission.CAMERA,
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION
+    )
 
     private val permLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-            if (grants[Manifest.permission.CAMERA] == true &&
-                grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { g ->
+            if (g[Manifest.permission.CAMERA] == true &&
+                g[Manifest.permission.ACCESS_FINE_LOCATION] == true
             ) start() else toast("Camera and precise location permission are required")
         }
 
+    private val locCb = object : LocationCallback() {
+        override fun onLocationResult(r: LocationResult) {
+            r.lastLocation?.let { onFix(it) }
+        }
+    }
+
+    // Keeps the saved photo upright when the phone is held sideways
+    private val orientationListener by lazy {
+        object : OrientationEventListener(this) {
+            override fun onOrientationChanged(o: Int) {
+                if (o == ORIENTATION_UNKNOWN) return
+                imageCapture?.targetRotation = when {
+                    o >= 315 || o < 45 -> Surface.ROTATION_0
+                    o < 135 -> Surface.ROTATION_270
+                    o < 225 -> Surface.ROTATION_180
+                    else -> Surface.ROTATION_90
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false) // true full screen
         setContentView(R.layout.activity_main)
         previewView = findViewById(R.id.preview)
         info = findViewById(R.id.info)
-        lm = getSystemService(LOCATION_SERVICE) as LocationManager
+        thumb = findViewById(R.id.thumb)
+        fused = LocationServices.getFusedLocationProviderClient(this)
+
         findViewById<View>(R.id.shutter).setOnClickListener { capture() }
+        info.setOnClickListener { editPlace() }
+        thumb.setOnClickListener { startActivity(Intent(this, GalleryActivity::class.java)) }
 
         if (permissions.all { granted(it) }) start() else permLauncher.launch(permissions)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (orientationListener.canDetectOrientation()) orientationListener.enable()
+        refreshThumb()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        orientationListener.disable()
     }
 
     private fun granted(p: String) =
@@ -99,10 +140,10 @@ class MainActivity : AppCompatActivity(), LocationListener {
         future.addListener({
             val provider = future.get()
             val preview = Preview.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_4_3).build()
+                .setTargetAspectRatio(AspectRatio.RATIO_16_9).build()
                 .also { it.setSurfaceProvider(previewView.surfaceProvider) }
             imageCapture = ImageCapture.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                .setTargetAspectRatio(AspectRatio.RATIO_16_9)
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                 .build()
             provider.unbindAll()
@@ -113,54 +154,93 @@ class MainActivity : AppCompatActivity(), LocationListener {
     // ---------- Location ----------
     @Suppress("MissingPermission")
     private fun startLocation() {
-        for (p in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
-            if (lm.allProviders.contains(p)) {
-                lm.requestLocationUpdates(p, 2000L, 0f, this)
-                lm.getLastKnownLocation(p)?.let { onLocationChanged(it) }
-            }
-        }
+        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
+            .setMinUpdateIntervalMillis(500L)
+            .build()
+        fused.requestLocationUpdates(req, locCb, Looper.getMainLooper())
     }
 
-    override fun onLocationChanged(l: Location) {
-        val cur = loc
-        val better = cur == null || l.accuracy <= cur.accuracy ||
-            l.time - cur.time > 20_000
-        if (!better) return
+    private fun onFix(l: Location) {
         loc = l
         updateInfo()
         val last = geocodedAt
-        if (last == null || last.distanceTo(l) > 25f) {
+        val now = System.currentTimeMillis()
+        if ((last == null || last.distanceTo(l) > 25f) && now - lastAttempt > 4000) {
+            lastAttempt = now
             geocodedAt = l
-            io.execute { reverseGeocode(l) }
+            net.execute { refreshPlaceAndMap(l) }
         }
     }
 
-    @Deprecated("Required on API < 30")
-    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
-    override fun onProviderEnabled(provider: String) {}
-    override fun onProviderDisabled(provider: String) {}
+    private fun refreshPlaceAndMap(l: Location) {
+        val p = geocode(l)
+        if (p != null) autoPlace = p else geocodedAt = null // retry later
+        val mb = MapTiles.fetch(l)
+        if (mb != null) { mapBmp = mb; mapFor = l }
+        runOnUiThread { updateInfo() }
+    }
 
     @Suppress("DEPRECATION")
-    private fun reverseGeocode(l: Location) {
-        try {
-            val a = Geocoder(this, Locale.getDefault())
-                .getFromLocation(l.latitude, l.longitude, 1)?.firstOrNull() ?: return
-            val title = listOfNotNull(
-                a.locality ?: a.subAdminArea, a.adminArea, a.countryName
-            ).distinct().joinToString(", ")
-            place = Place(title, a.getAddressLine(0) ?: "")
-            runOnUiThread { updateInfo() }
-        } catch (_: Exception) { /* offline: stamp falls back to coordinates */ }
+    private fun geocode(l: Location): Place? = try {
+        val list = Geocoder(this, Locale.getDefault()).getFromLocation(l.latitude, l.longitude, 5)
+        val a = list?.firstOrNull { !it.postalCode.isNullOrBlank() } ?: list?.firstOrNull()
+        if (a == null) null else {
+            val flag = a.countryCode?.takeIf { it.length == 2 }?.uppercase()?.let { cc ->
+                String(Character.toChars(0x1F1E6 + (cc[0] - 'A'))) +
+                    String(Character.toChars(0x1F1E6 + (cc[1] - 'A')))
+            } ?: ""
+            val title = listOfNotNull(a.locality ?: a.subAdminArea, a.adminArea, a.countryName)
+                .joinToString(", ")
+            Place(title, a.getAddressLine(0) ?: "", flag)
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun currentPlace(): Place? {
+        val mp = manualPlace
+        val at = manualAt
+        val l = loc
+        if (mp != null && at != null && l != null && at.distanceTo(l) < 150f) return mp
+        return autoPlace
     }
 
     private fun updateInfo() {
         val l = loc ?: return
-        val p = place
+        val p = currentPlace()
         info.text = buildString {
-            if (p != null) append(p.title).append('\n')
-            append(coords(l)).append('\n')
-            append(timeText(System.currentTimeMillis()))
+            if (p != null) {
+                append(p.title).append('\n')
+                if (p.address.isNotBlank()) append(p.address).append('\n')
+            }
+            append(StampPainter.coords(l)).append("  (±").append(l.accuracy.roundToInt()).append(" m)\n")
+            append(StampPainter.timeText(System.currentTimeMillis()))
         }
+    }
+
+    /** Tap the info box to correct the heading / pincode by hand. */
+    private fun editPlace() {
+        val p = currentPlace()
+        val lay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 0)
+        }
+        val t = EditText(this).apply { hint = "Heading (City, State, Country)"; setText(p?.title ?: "") }
+        val a = EditText(this).apply { hint = "Full address with pincode"; setText(p?.address ?: "") }
+        lay.addView(t); lay.addView(a)
+        AlertDialog.Builder(this)
+            .setTitle("Edit address")
+            .setView(lay)
+            .setPositiveButton("Use this") { _, _ ->
+                manualPlace = Place(t.text.toString(), a.text.toString(), p?.flag ?: "")
+                manualAt = loc
+                updateInfo()
+            }
+            .setNeutralButton("Auto") { _, _ ->
+                manualPlace = null; manualAt = null; updateInfo()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     // ---------- Capture ----------
@@ -168,14 +248,22 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val ic = imageCapture ?: return
         val l = loc
         if (l == null) { toast("Waiting for GPS fix…"); return }
-        val snap = Snap(l, place, System.currentTimeMillis())
+        if (l.accuracy > 50f) toast("Weak GPS (±${l.accuracy.roundToInt()} m). Go near open sky for better accuracy.")
+
+        val mb = mapBmp
+        val mf = mapFor
+        val usableMap = if (mb != null && mf != null && mf.distanceTo(l) < 30f) mb else null
+        val snap = Snap(l, currentPlace(), System.currentTimeMillis(), usableMap)
+        val screenRatio = maxOf(previewView.width, previewView.height).toFloat() /
+            minOf(previewView.width, previewView.height).coerceAtLeast(1)
+
         val raw = File.createTempFile("raw", ".jpg", cacheDir)
         ic.takePicture(
             ImageCapture.OutputFileOptions.Builder(raw).build(),
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(r: ImageCapture.OutputFileResults) {
-                    io.execute { stampAndSave(raw, snap) }
+                    io.execute { stampAndSave(raw, snap, screenRatio) }
                 }
                 override fun onError(e: ImageCaptureException) {
                     toast("Capture failed: ${e.message}")
@@ -183,12 +271,11 @@ class MainActivity : AppCompatActivity(), LocationListener {
             })
     }
 
-    private fun stampAndSave(raw: File, s: Snap) {
+    private fun stampAndSave(raw: File, s: Snap, screenRatio: Float) {
         try {
-            val orientation = ExifInterface(raw)
+            val orientation = ExifInterface(raw.absolutePath)
                 .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
 
-            // Decode (downsample very large frames to avoid OOM)
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(raw.path, bounds)
             var sample = 1
@@ -197,108 +284,60 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 inSampleSize = sample; inMutable = true
             }) ?: error("decode failed")
 
-            val m = Matrix()
-            when (orientation) {
-                ExifInterface.ORIENTATION_ROTATE_90 -> m.postRotate(90f)
-                ExifInterface.ORIENTATION_ROTATE_180 -> m.postRotate(180f)
-                ExifInterface.ORIENTATION_ROTATE_270 -> m.postRotate(270f)
+            val rot = when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
             }
-            var bmp = Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+            var bmp = if (rot == 0f) src else Bitmap.createBitmap(
+                src, 0, 0, src.width, src.height, Matrix().apply { postRotate(rot) }, true
+            )
+
+            // Portrait shots: crop to the screen shape so the photo = what you saw (full screen)
+            if (bmp.height > bmp.width) {
+                val cur = bmp.height.toFloat() / bmp.width
+                if (cur < screenRatio) {
+                    val nw = (bmp.height / screenRatio).toInt()
+                    bmp = Bitmap.createBitmap(bmp, (bmp.width - nw) / 2, 0, nw, bmp.height)
+                } else if (cur > screenRatio) {
+                    val nh = (bmp.width * screenRatio).toInt()
+                    bmp = Bitmap.createBitmap(bmp, 0, (bmp.height - nh) / 2, bmp.width, nh)
+                }
+            }
             if (!bmp.isMutable) bmp = bmp.copy(Bitmap.Config.ARGB_8888, true)
 
-            drawStamp(Canvas(bmp), bmp.width, bmp.height, s)
-            val uri = saveToGallery(bmp, s)
-            raw.delete()
-            toast(if (uri != null) "Saved to Pictures/GeoStampCam" else "Save failed")
-        } catch (e: Exception) {
-            toast("Error: ${e.message}")
-        }
-    }
+            val map = s.map ?: MapTiles.fetch(s.loc)
+            StampPainter.draw(Canvas(bmp), bmp.width, bmp.height, s.copy(map = map))
 
-    // ---------- Stamp drawing ----------
-    private fun drawStamp(c: Canvas, w: Int, h: Int, s: Snap) {
-        val pad = w * 0.035f
-        val textW = (w - 2 * pad).toInt()
+            val name = "GEO_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(s.time)) + ".jpg"
+            val out = File(photosDir(this), name)
+            out.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
 
-        fun paint(size: Float, bold: Boolean) = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            textSize = size
-            typeface = if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-            setShadowLayer(size * 0.08f, 0f, 0f, Color.BLACK)
-        }
-        fun layout(t: String, p: TextPaint) =
-            StaticLayout.Builder.obtain(t, 0, t.length, p, textW)
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
-
-        val lines = mutableListOf<StaticLayout>()
-        s.place?.let {
-            lines += layout(it.title, paint(w * 0.052f, true))
-            if (it.address.isNotBlank()) lines += layout(it.address, paint(w * 0.034f, false))
-        }
-        lines += layout(coords(s.loc), paint(w * 0.034f, false))
-        lines += layout(timeText(s.time), paint(w * 0.034f, false))
-
-        val gap = w * 0.008f
-        val total = lines.sumOf { it.height.toDouble() }.toFloat() + gap * (lines.size - 1)
-        val top = h - total - 2 * pad
-
-        c.drawRect(0f, top, w.toFloat(), h.toFloat(),
-            Paint().apply { color = Color.argb(150, 0, 0, 0) })
-
-        var y = top + pad
-        for (l in lines) {
-            c.save(); c.translate(pad, y); l.draw(c); c.restore()
-            y += l.height + gap
-        }
-    }
-
-    private fun coords(l: Location) =
-        "Lat %.6f° Long %.6f°".format(Locale.US, l.latitude, l.longitude)
-
-    private fun timeText(ms: Long): String {
-        val tz = TimeZone.getDefault()
-        val off = tz.getOffset(ms) / 60000
-        val sign = if (off < 0) "-" else "+"
-        val gmt = "GMT %s%02d:%02d".format(sign, abs(off) / 60, abs(off) % 60)
-        val f = SimpleDateFormat("EEEE, dd/MM/yyyy hh:mm a", Locale.ENGLISH).apply { timeZone = tz }
-        return "${f.format(Date(ms))} $gmt"
-    }
-
-    // ---------- Save + EXIF ----------
-    private fun saveToGallery(bmp: Bitmap, s: Snap): android.net.Uri? {
-        val name = "GEO_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(s.time)) + ".jpg"
-        val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, name)
-            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-            put(MediaStore.Images.Media.DATE_TAKEN, s.time)
-            if (Build.VERSION.SDK_INT >= 29) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/GeoStampCam")
-                put(MediaStore.Images.Media.IS_PENDING, 1)
-            }
-        }
-        val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-            ?: return null
-
-        contentResolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
-
-        // Also embed real GPS EXIF (pixels are already upright -> orientation normal)
-        contentResolver.openFileDescriptor(uri, "rw")?.use { pfd ->
-            ExifInterface(pfd.fileDescriptor).apply {
+            ExifInterface(out.absolutePath).apply {
                 setGpsInfo(s.loc)
-                setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
                 setAttribute(
                     ExifInterface.TAG_DATETIME_ORIGINAL,
                     SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(Date(s.time))
                 )
                 saveAttributes()
             }
+            raw.delete()
+            toast("Saved")
+            refreshThumb()
+        } catch (e: Exception) {
+            toast("Error: ${e.message}")
         }
-        if (Build.VERSION.SDK_INT >= 29) {
-            contentResolver.update(uri, ContentValues().apply {
-                put(MediaStore.Images.Media.IS_PENDING, 0)
-            }, null, null)
+    }
+
+    private fun refreshThumb() {
+        io.execute {
+            val latest = listPhotos(this).firstOrNull()
+            val bm = latest?.let { decodeSampled(it.absolutePath, 200) }
+            runOnUiThread {
+                if (bm != null) thumb.setImageBitmap(bm) else thumb.setImageDrawable(null)
+            }
         }
-        return uri
     }
 
     private fun toast(msg: String) = runOnUiThread {
@@ -307,7 +346,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     override fun onDestroy() {
         super.onDestroy()
-        lm.removeUpdates(this)
+        fused.removeLocationUpdates(locCb)
         io.shutdown()
+        net.shutdown()
     }
 }

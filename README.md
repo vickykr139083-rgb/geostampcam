@@ -1,9 +1,12 @@
 # GeoStamp Cam
-Takes a photo and prints location, coordinates and date/time onto the image (and writes GPS EXIF).
+Full-screen camera that prints a GPS Map Camera-style stamp (satellite thumbnail, place, address,
+coordinates, date/time, app-name chip) onto the photo and writes GPS EXIF.
+
+- Photos are stored privately in the app (NOT in the phone Gallery). Open them with the thumbnail
+  button next to the shutter; Share/Delete inside the viewer.
+- Tap the info box on the camera screen to correct the heading/pincode by hand.
+- Change the top-right label: `APP_LABEL` in StampPainter.kt.
 
 ## Build
-- Android Studio: File > Open this folder > Run (let it sync/create the Gradle wrapper).
-- No Android Studio: push to GitHub; the Actions workflow builds `app-debug.apk` (Actions tab > Artifacts).
-
-Address text uses Android's built-in Geocoder (needs internet; offline it prints coordinates only).
-Photos save to Pictures/GeoStampCam.
+Push to GitHub; the Actions workflow builds `app-debug.apk` (Actions > run > Artifacts).
+Or open in Android Studio and press Run.

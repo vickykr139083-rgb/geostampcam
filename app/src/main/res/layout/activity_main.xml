@@ -9,27 +9,41 @@
         android:id="@+id/preview"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:scaleType="fitCenter" />
+        app:scaleType="fillCenter" />
 
     <TextView
         android:id="@+id/info"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:layout_marginBottom="130dp"
-        android:background="#99000000"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="150dp"
+        android:background="@drawable/info_bg"
         android:padding="12dp"
         android:text="Waiting for GPS…"
         android:textColor="#FFFFFF"
-        android:textSize="14sp" />
+        android:textSize="13sp" />
 
     <View
         android:id="@+id/shutter"
         android:layout_width="72dp"
         android:layout_height="72dp"
         android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="32dp"
+        android:layout_marginBottom="48dp"
         android:background="@drawable/shutter"
         android:clickable="true"
         android:focusable="true" />
+
+    <ImageView
+        android:id="@+id/thumb"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="36dp"
+        android:layout_marginBottom="54dp"
+        android:background="@drawable/thumb_bg"
+        android:clipToOutline="true"
+        android:padding="2dp"
+        android:scaleType="centerCrop" />
 </FrameLayout>
