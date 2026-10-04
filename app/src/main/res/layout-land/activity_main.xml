@@ -17,7 +17,7 @@
         android:layout_height="wrap_content"
         android:layout_gravity="top|start"
         android:layout_marginStart="12dp"
-        android:layout_marginTop="48dp"
+        android:layout_marginTop="12dp"
         android:background="@drawable/info_bg"
         android:padding="8dp"
         android:text="Also save to Gallery  "
@@ -26,24 +26,23 @@
 
     <TextView
         android:id="@+id/info"
-        android:layout_width="match_parent"
+        android:layout_width="360dp"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
+        android:layout_gravity="bottom|start"
         android:layout_marginStart="12dp"
-        android:layout_marginEnd="12dp"
-        android:layout_marginBottom="150dp"
+        android:layout_marginBottom="12dp"
         android:background="@drawable/info_bg"
-        android:padding="12dp"
+        android:padding="10dp"
         android:text="Waiting for GPS…"
         android:textColor="#FFFFFF"
-        android:textSize="13sp" />
+        android:textSize="12sp" />
 
     <View
         android:id="@+id/shutter"
         android:layout_width="72dp"
         android:layout_height="72dp"
-        android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="48dp"
+        android:layout_gravity="end|center_vertical"
+        android:layout_marginEnd="40dp"
         android:background="@drawable/shutter"
         android:clickable="true"
         android:focusable="true" />
@@ -52,9 +51,9 @@
         android:id="@+id/thumb"
         android:layout_width="60dp"
         android:layout_height="60dp"
-        android:layout_gravity="bottom|start"
-        android:layout_marginStart="36dp"
-        android:layout_marginBottom="54dp"
+        android:layout_gravity="end|bottom"
+        android:layout_marginEnd="46dp"
+        android:layout_marginBottom="24dp"
         android:background="@drawable/thumb_bg"
         android:clipToOutline="true"
         android:padding="2dp"

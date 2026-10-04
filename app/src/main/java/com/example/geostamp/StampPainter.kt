@@ -44,6 +44,13 @@ object StampPainter {
         setShadowLayer(size * 0.06f, 0f, 0f, Color.argb(160, 0, 0, 0))
     }
 
+    /** Text paint shrunk (down to a minimum) until the line fits in one row. */
+    private fun fit(t: String, size: Float, maxW: Int, minSize: Float): TextPaint {
+        val p = tp(size)
+        while (p.measureText(t) > maxW && p.textSize > minSize) p.textSize = p.textSize * 0.95f
+        return p
+    }
+
     fun draw(c: Canvas, w: Int, h: Int, s: Snap) {
         // Everything is sized from the SHORT edge, so portrait and landscape look alike
         val u = minOf(w, h).toFloat()
@@ -53,8 +60,10 @@ object StampPainter {
         val map = s.map
         val mapS = if (map != null) u * 0.30f else 0f
         val boxLeft = if (map != null) m + mapS + u * 0.015f else m
-        val boxRight = w - m
-        val textW = (boxRight - boxLeft - 2 * pad).toInt().coerceAtLeast(100)
+        // In landscape the box doesn't stretch across the whole width
+        val available = (w - m - boxLeft - 2 * pad).toInt().coerceAtLeast(100)
+        val textW = minOf(available, (u * 1.0f).toInt())
+        val boxRight = boxLeft + textW + 2 * pad
 
         fun wrap(t: String, p: TextPaint, maxLines: Int) =
             StaticLayout.Builder.obtain(t, 0, t.length, p, textW)
@@ -72,8 +81,8 @@ object StampPainter {
             lines += wrap(title, titlePaint, 1)
             if (p.address.isNotBlank()) lines += wrap(p.address, tp(u * 0.034f), 3)
         }
-        lines += wrap(coords(s.loc), tp(u * 0.034f), 1)
-        lines += wrap(timeText(s.time), tp(u * 0.034f), 1)
+        lines += wrap(coords(s.loc), fit(coords(s.loc), u * 0.034f, textW, u * 0.02f), 1)
+        lines += wrap(timeText(s.time), fit(timeText(s.time), u * 0.034f, textW, u * 0.02f), 1)
 
         var textH = 0f
         lines.forEachIndexed { i, l -> textH += l.height + if (i > 0) gap else 0f }

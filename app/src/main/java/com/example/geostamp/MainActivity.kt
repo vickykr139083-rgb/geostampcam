@@ -9,6 +9,7 @@ import android.graphics.Canvas
 import android.graphics.Matrix
 import android.location.Geocoder
 import android.location.Location
+import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.view.OrientationEventListener
@@ -22,6 +23,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -53,22 +55,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fused: FusedLocationProviderClient
     private var imageCapture: ImageCapture? = null
 
-    @Volatile private var loc: Location? = null
-    @Volatile private var autoPlace: Place? = null
-    @Volatile private var manualPlace: Place? = null
-    @Volatile private var manualAt: Location? = null
-    @Volatile private var mapBmp: Bitmap? = null
-    @Volatile private var mapFor: Location? = null
-    private var geocodedAt: Location? = null
-    private var lastAttempt = 0L
-
     private val io = Executors.newSingleThreadExecutor()
     private val net = Executors.newSingleThreadExecutor()
 
-    private val permissions = arrayOf(
+    private val required = arrayOf(
         Manifest.permission.CAMERA,
-        Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.ACCESS_COARSE_LOCATION
+        Manifest.permission.ACCESS_FINE_LOCATION
     )
 
     private val permLauncher =
@@ -84,7 +76,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Keeps the saved photo upright when the phone is held sideways
+    // Tells the camera how the phone is really held (works even if auto-rotate is off)
     private val orientationListener by lazy {
         object : OrientationEventListener(this) {
             override fun onOrientationChanged(o: Int) {
@@ -108,11 +100,22 @@ class MainActivity : AppCompatActivity() {
         thumb = findViewById(R.id.thumb)
         fused = LocationServices.getFusedLocationProviderClient(this)
 
+        val prefs = getSharedPreferences("prefs", MODE_PRIVATE)
+        findViewById<SwitchCompat>(R.id.galleryToggle).apply {
+            isChecked = prefs.getBoolean("gallery", true)
+            setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("gallery", on).apply() }
+        }
+
         findViewById<View>(R.id.shutter).setOnClickListener { capture() }
         info.setOnClickListener { editPlace() }
         thumb.setOnClickListener { startActivity(Intent(this, GalleryActivity::class.java)) }
 
-        if (permissions.all { granted(it) }) start() else permLauncher.launch(permissions)
+        updateInfo()
+        if (required.all { granted(it) }) start() else {
+            val ask = mutableListOf(*required, Manifest.permission.ACCESS_COARSE_LOCATION)
+            if (Build.VERSION.SDK_INT <= 28) ask += Manifest.permission.WRITE_EXTERNAL_STORAGE
+            permLauncher.launch(ask.toTypedArray())
+        }
     }
 
     override fun onResume() {
@@ -161,22 +164,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onFix(l: Location) {
-        loc = l
+        GeoState.loc = l
         updateInfo()
-        val last = geocodedAt
+        val last = GeoState.geocodedAt
         val now = System.currentTimeMillis()
-        if ((last == null || last.distanceTo(l) > 25f) && now - lastAttempt > 4000) {
-            lastAttempt = now
-            geocodedAt = l
+        if ((last == null || last.distanceTo(l) > 25f) && now - GeoState.lastAttempt > 4000) {
+            GeoState.lastAttempt = now
+            GeoState.geocodedAt = l
             net.execute { refreshPlaceAndMap(l) }
         }
     }
 
     private fun refreshPlaceAndMap(l: Location) {
         val p = geocode(l)
-        if (p != null) autoPlace = p else geocodedAt = null // retry later
+        if (p != null) GeoState.autoPlace = p else GeoState.geocodedAt = null // retry later
         val mb = MapTiles.fetch(l)
-        if (mb != null) { mapBmp = mb; mapFor = l }
+        if (mb != null) { GeoState.mapBmp = mb; GeoState.mapFor = l }
         runOnUiThread { updateInfo() }
     }
 
@@ -198,15 +201,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun currentPlace(): Place? {
-        val mp = manualPlace
-        val at = manualAt
-        val l = loc
+        val mp = GeoState.manualPlace
+        val at = GeoState.manualAt
+        val l = GeoState.loc
         if (mp != null && at != null && l != null && at.distanceTo(l) < 150f) return mp
-        return autoPlace
+        return GeoState.autoPlace
     }
 
     private fun updateInfo() {
-        val l = loc ?: return
+        val l = GeoState.loc ?: return
         val p = currentPlace()
         info.text = buildString {
             if (p != null) {
@@ -232,12 +235,12 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Edit address")
             .setView(lay)
             .setPositiveButton("Use this") { _, _ ->
-                manualPlace = Place(t.text.toString(), a.text.toString(), p?.flag ?: "")
-                manualAt = loc
+                GeoState.manualPlace = Place(t.text.toString(), a.text.toString(), p?.flag ?: "")
+                GeoState.manualAt = GeoState.loc
                 updateInfo()
             }
             .setNeutralButton("Auto") { _, _ ->
-                manualPlace = null; manualAt = null; updateInfo()
+                GeoState.manualPlace = null; GeoState.manualAt = null; updateInfo()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -246,16 +249,18 @@ class MainActivity : AppCompatActivity() {
     // ---------- Capture ----------
     private fun capture() {
         val ic = imageCapture ?: return
-        val l = loc
+        val l = GeoState.loc
         if (l == null) { toast("Waiting for GPS fix…"); return }
         if (l.accuracy > 50f) toast("Weak GPS (±${l.accuracy.roundToInt()} m). Go near open sky for better accuracy.")
 
-        val mb = mapBmp
-        val mf = mapFor
+        val mb = GeoState.mapBmp
+        val mf = GeoState.mapFor
         val usableMap = if (mb != null && mf != null && mf.distanceTo(l) < 30f) mb else null
         val snap = Snap(l, currentPlace(), System.currentTimeMillis(), usableMap)
-        val screenRatio = maxOf(previewView.width, previewView.height).toFloat() /
-            minOf(previewView.width, previewView.height).coerceAtLeast(1)
+        val pw = previewView.width.coerceAtLeast(1)
+        val ph = previewView.height.coerceAtLeast(1)
+        val screenRatio = maxOf(pw, ph).toFloat() / minOf(pw, ph)
+        val uiLandscape = pw > ph
 
         val raw = File.createTempFile("raw", ".jpg", cacheDir)
         ic.takePicture(
@@ -263,7 +268,7 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(r: ImageCapture.OutputFileResults) {
-                    io.execute { stampAndSave(raw, snap, screenRatio) }
+                    io.execute { stampAndSave(raw, snap, screenRatio, uiLandscape) }
                 }
                 override fun onError(e: ImageCaptureException) {
                     toast("Capture failed: ${e.message}")
@@ -271,7 +276,24 @@ class MainActivity : AppCompatActivity() {
             })
     }
 
-    private fun stampAndSave(raw: File, s: Snap, screenRatio: Float) {
+    /** Trim to the screen's shape (long side / short side = ratio) so photo = what you saw. */
+    private fun cropToRatio(b: Bitmap, ratio: Float): Bitmap {
+        val long = maxOf(b.width, b.height).toFloat()
+        val short = minOf(b.width, b.height).toFloat()
+        val cur = long / short
+        val tall = b.height >= b.width
+        return if (cur < ratio) {
+            val ns = (long / ratio).toInt()
+            if (tall) Bitmap.createBitmap(b, (b.width - ns) / 2, 0, ns, b.height)
+            else Bitmap.createBitmap(b, 0, (b.height - ns) / 2, b.width, ns)
+        } else if (cur > ratio) {
+            val nl = (short * ratio).toInt()
+            if (tall) Bitmap.createBitmap(b, 0, (b.height - nl) / 2, b.width, nl)
+            else Bitmap.createBitmap(b, (b.width - nl) / 2, 0, nl, b.height)
+        } else b
+    }
+
+    private fun stampAndSave(raw: File, s: Snap, screenRatio: Float, uiLandscape: Boolean) {
         try {
             val orientation = ExifInterface(raw.absolutePath)
                 .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
@@ -294,17 +316,8 @@ class MainActivity : AppCompatActivity() {
                 src, 0, 0, src.width, src.height, Matrix().apply { postRotate(rot) }, true
             )
 
-            // Portrait shots: crop to the screen shape so the photo = what you saw (full screen)
-            if (bmp.height > bmp.width) {
-                val cur = bmp.height.toFloat() / bmp.width
-                if (cur < screenRatio) {
-                    val nw = (bmp.height / screenRatio).toInt()
-                    bmp = Bitmap.createBitmap(bmp, (bmp.width - nw) / 2, 0, nw, bmp.height)
-                } else if (cur > screenRatio) {
-                    val nh = (bmp.width * screenRatio).toInt()
-                    bmp = Bitmap.createBitmap(bmp, 0, (bmp.height - nh) / 2, bmp.width, nh)
-                }
-            }
+            // Crop only when the photo's orientation matches the on-screen preview's
+            if ((bmp.width > bmp.height) == uiLandscape) bmp = cropToRatio(bmp, screenRatio)
             if (!bmp.isMutable) bmp = bmp.copy(Bitmap.Config.ARGB_8888, true)
 
             val map = s.map ?: MapTiles.fetch(s.loc)
@@ -323,7 +336,10 @@ class MainActivity : AppCompatActivity() {
                 saveAttributes()
             }
             raw.delete()
-            toast("Saved")
+
+            val toGallery = getSharedPreferences("prefs", MODE_PRIVATE).getBoolean("gallery", true)
+            val shared = if (toGallery) exportToGallery(this, out) else false
+            toast(if (shared) "Saved (also in Gallery)" else "Saved")
             refreshThumb()
         } catch (e: Exception) {
             toast("Error: ${e.message}")

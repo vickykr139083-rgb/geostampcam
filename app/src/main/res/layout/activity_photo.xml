@@ -16,8 +16,13 @@
             style="@style/Widget.AppCompat.Button.Borderless"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:minWidth="0dp"
+            android:minimumWidth="0dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
             android:text="‹ Back"
-            android:textColor="#FFFFFF" />
+            android:textColor="#FFFFFF"
+            android:textSize="13sp" />
 
         <TextView
             android:id="@+id/counter"
@@ -28,20 +33,43 @@
             android:textColor="#FFFFFF" />
 
         <Button
+            android:id="@+id/save"
+            style="@style/Widget.AppCompat.Button.Borderless"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="0dp"
+            android:minimumWidth="0dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:text="To Gallery"
+            android:textColor="#7CFC9A"
+            android:textSize="13sp" />
+
+        <Button
             android:id="@+id/share"
             style="@style/Widget.AppCompat.Button.Borderless"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:minWidth="0dp"
+            android:minimumWidth="0dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
             android:text="Share"
-            android:textColor="#FFFFFF" />
+            android:textColor="#FFFFFF"
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/delete"
             style="@style/Widget.AppCompat.Button.Borderless"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:minWidth="0dp"
+            android:minimumWidth="0dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
             android:text="Delete"
-            android:textColor="#FF6B6B" />
+            android:textColor="#FF6B6B"
+            android:textSize="13sp" />
     </LinearLayout>
 
     <ImageView

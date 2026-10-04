@@ -6,6 +6,7 @@ import android.view.MotionEvent
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
@@ -24,13 +25,23 @@ class PhotoActivity : AppCompatActivity() {
         img = findViewById(R.id.img)
         counter = findViewById(R.id.counter)
 
-        intent.getStringArrayExtra("paths")?.forEach { files.add(File(it)) }
-        index = intent.getIntExtra("index", 0)
+        intent.getStringArrayExtra("paths")?.map { File(it) }?.filter { it.exists() }
+            ?.let { files.addAll(it) }
+        index = savedInstanceState?.getInt("index") ?: intent.getIntExtra("index", 0)
         if (files.isEmpty()) { finish(); return }
+        index = index.coerceIn(0, files.size - 1)
 
         findViewById<Button>(R.id.close).setOnClickListener { finish() }
         findViewById<Button>(R.id.share).setOnClickListener { share() }
         findViewById<Button>(R.id.delete).setOnClickListener { confirmDelete() }
+        findViewById<Button>(R.id.save).setOnClickListener {
+            val ok = exportToGallery(this, files[index])
+            Toast.makeText(
+                this,
+                if (ok) "Saved to phone Gallery (Pictures/GeoStampCam)" else "Couldn't save",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
 
         // swipe left/right to move between photos
         var downX = 0f
@@ -45,6 +56,11 @@ class PhotoActivity : AppCompatActivity() {
             true
         }
         show(index)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt("index", index)
     }
 
     private fun show(i: Int) {
